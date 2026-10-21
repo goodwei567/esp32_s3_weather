@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 运行期数据（不要提交）
+pc/weather.db
+pc/monitor.log
+*.log
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Thonny 产生的临时文件
+.thonny/

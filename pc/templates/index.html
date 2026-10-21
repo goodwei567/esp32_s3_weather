@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>室内气象站 · ESP32-S3</title>
+<style>
+  :root {
+    --bg: #080c11;
+    --bg-2: #0d141c;
+    --panel: #10171f;
+    --panel-2: #151e28;
+    --line: #1e2a37;
+    --text: #e8eff6;
+    --muted: #7b8b9c;
+    --temp: #ffb347;
+    --humi: #2fd3c0;
+    --pres: #6ea8fe;
+    --alt: #b6e26a;
+    --ok: #46d38a;
+    --bad: #ff6b6b;
+    --sans: "Bahnschrift", "Segoe UI Variable Text", "Microsoft YaHei UI",
+            "PingFang SC", sans-serif;
+    --mono: "Cascadia Mono", "Consolas", "SFMono-Regular", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--sans);
+    color: var(--text);
+    background:
+      radial-gradient(1200px 600px at 12% -10%, #16283a 0%, transparent 60%),
+      radial-gradient(900px 500px at 95% 0%, #1b2a1f 0%, transparent 55%),
+      linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 55%);
+    background-attachment: fixed;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 26px 20px 40px; }
+
+  header {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 18px; flex-wrap: wrap; margin-bottom: 22px;
+    animation: rise .5s ease both;
+  }
+  .brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .brand h1 {
+    margin: 0; font-size: 26px; letter-spacing: .5px; font-weight: 600;
+  }
+  .brand .tag {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+  }
+  .status { display: flex; align-items: center; gap: 14px; font-size: 13px; color: var(--muted); }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 12px; border-radius: 999px; font-family: var(--mono);
+    font-size: 12px; border: 1px solid var(--line); background: var(--panel);
+  }
+  .pill .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+  }
+  .pill.ok .dot { background: var(--ok); box-shadow: 0 0 0 0 rgba(70,211,138,.6);
+    animation: pulse 2s infinite; }
+  .pill.bad .dot { background: var(--bad); }
+  .pill.ok { color: #b9f0d3; }
+  .pill.bad { color: #ffc0c0; }
+
+  .cards {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; margin-bottom: 18px;
+  }
+  .card {
+    position: relative; overflow: hidden;
+    background: linear-gradient(160deg, var(--panel-2) 0%, var(--panel) 100%);
+    border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px 18px 14px;
+    animation: rise .5s ease both;
+  }
+  .card::after {
+    content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
+    background: var(--accent);
+  }
+  .card h3 {
+    margin: 0 0 8px; font-size: 12px; font-weight: 500;
+    letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted);
+  }
+  .card .val {
+    font-family: var(--mono); font-size: 34px; line-height: 1;
+    font-weight: 600; color: var(--accent);
+  }
+  .card .val small { font-size: 14px; color: var(--muted); margin-left: 4px; }
+  .card .sub {
+    margin-top: 10px; font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 16px; animation: rise .5s .06s ease both;
+  }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px;
+         overflow: hidden; background: var(--panel); }
+  .seg button {
+    appearance: none; border: 0; background: transparent; color: var(--muted);
+    font-family: var(--mono); font-size: 12.5px; padding: 8px 14px; cursor: pointer;
+    transition: color .15s, background .15s;
+  }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button:hover { color: var(--text); }
+  .seg button.on { background: #1d2a38; color: var(--text); }
+  .toolbar .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .toolbar .spacer { flex: 1; }
+  .btn {
+    text-decoration: none; color: var(--muted); border: 1px solid var(--line);
+    background: var(--panel); border-radius: 10px; padding: 8px 14px;
+    font-family: var(--mono); font-size: 12.5px; transition: color .15s, border-color .15s;
+  }
+  .btn:hover { color: var(--text); border-color: #2c3d4f; }
+
+  .charts { display: grid; gap: 14px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 14px 18px 10px; animation: rise .5s ease both;
+  }
+  .panel-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .panel-head h2 {
+    margin: 0; font-size: 13px; font-weight: 500; letter-spacing: 1.6px;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .panel-head .now {
+    font-family: var(--mono); font-size: 16px; color: var(--accent);
+  }
+  .chart-wrap { position: relative; height: 190px; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .tip {
+    position: absolute; pointer-events: none; opacity: 0; transform: translate(-50%, -120%);
+    background: #0b1219; border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 10px; font-family: var(--mono); font-size: 12px;
+    white-space: nowrap; transition: opacity .12s; z-index: 5;
+  }
+  .tip.on { opacity: 1; }
+  .tip b { color: var(--accent); }
+
+  footer {
+    margin-top: 22px; font-family: var(--mono); font-size: 11.5px;
+    color: #5d6b7a; display: flex; gap: 18px; flex-wrap: wrap;
+    animation: rise .5s .1s ease both;
+  }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(70,211,138,.5); }
+    70% { box-shadow: 0 0 0 7px rgba(70,211,138,0); }
+    100% { box-shadow: 0 0 0 0 rgba(70,211,138,0); }
+  }
+
+  @media (max-width: 860px) {
+    .cards { grid-template-columns: repeat(2, 1fr); }
+    .card .val { font-size: 28px; }
+    .wrap { padding: 18px 14px 32px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <h1>室内气象站</h1>
+      <span class="tag">ESP32-S3 · AHT20 + BMP280</span>
+    </div>
+    <div class="status">
+      <span class="pill" id="pill"><i class="dot"></i><span id="pill-text">连接中…</span></span>
+      <span>最后更新 <b id="last-upd" style="color:var(--text)">--</b></span>
+    </div>
+  </header>
+
+  <section class="cards">
+    <div class="card" style="--accent: var(--temp); animation-delay:.02s">
+      <h3>温度</h3>
+      <div class="val" id="c-t">--<small>°C</small></div>
+      <div class="sub" id="c-t-sub">范围 --</div>
+    </div>
+    <div class="card" style="--accent: var(--humi); animation-delay:.06s">
+      <h3>湿度</h3>
+      <div class="val" id="c-h">--<small>%</small></div>
+      <div class="sub" id="c-h-sub">范围 --</div>
+    </div>
+    <div class="card" style="--accent: var(--pres); animation-delay:.1s">
+      <h3>气压</h3>
+      <div class="val" id="c-p">--<small>hPa</small></div>
+      <div class="sub" id="c-p-sub">范围 --</div>
+    </div>
+    <div class="card" style="--accent: var(--alt); animation-delay:.14s">
+      <h3>海拔</h3>
+      <div class="val" id="c-a">--<small>m</small></div>
+      <div class="sub" id="c-a-sub">按标准大气推算</div>
+    </div>
+  </section>
+
+  <section class="toolbar">
+    <div class="seg" id="seg">
+      <button data-hours="1">1 小时</button>
+      <button data-hours="6">6 小时</button>
+      <button data-hours="24" class="on">24 小时</button>
+      <button data-hours="168">7 天</button>
+      <button data-hours="720">30 天</button>
+    </div>
+    <span class="meta" id="meta">加载中…</span>
+    <span class="spacer"></span>
+    <a class="btn" id="csv" href="/api/export.csv?hours=24">导出 CSV</a>
+  </section>
+
+  <section class="charts">
+    <div class="panel" style="--accent: var(--temp); animation-delay:.05s">
+      <div class="panel-head"><h2>温度</h2><span class="now" id="n-t">--</span></div>
+      <div class="chart-wrap"><canvas id="ch-t"></canvas><div class="tip" id="tip-t"></div></div>
+    </div>
+    <div class="panel" style="--accent: var(--humi); animation-delay:.1s">
+      <div class="panel-head"><h2>湿度</h2><span class="now" id="n-h">--</span></div>
+      <div class="chart-wrap"><canvas id="ch-h"></canvas><div class="tip" id="tip-h"></div></div>
+    </div>
+    <div class="panel" style="--accent: var(--pres); animation-delay:.15s">
+      <div class="panel-head"><h2>气压</h2><span class="now" id="n-p">--</span></div>
+      <div class="chart-wrap"><canvas id="ch-p"></canvas><div class="tip" id="tip-p"></div></div>
+    </div>
+  </section>
+
+  <footer>
+    <span id="f-db">--</span>
+    <span id="f-count">--</span>
+    <span>每 60 秒自动刷新</span>
+  </footer>
+</div>
+
+<script>
+const REFRESH_MS = 60000;
+let hours = 24;
+let rows = [];          // [epoch, t, h, p, alt]
+let lastEpoch = null;
+
+/* ---------- 工具 ---------- */
+const pad2 = n => String(n).padStart(2, "0");
+function fmtTime(ep, span) {
+  const d = new Date(ep * 1000);
+  if (span <= 26 * 3600) return pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  return (d.getMonth() + 1) + "/" + d.getDate() + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+}
+function relative(ep) {
+  if (!ep) return "--";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - ep));
+  if (s < 60) return s + " 秒前";
+  if (s < 3600) return Math.round(s / 60) + " 分钟前";
+  if (s < 86400) return (s / 3600).toFixed(1) + " 小时前";
+  return (s / 86400).toFixed(1) + " 天前";
+}
+
+/* ---------- 折线图 ---------- */
+class LineChart {
+  constructor(canvasId, tipId, opt) {
+    this.canvas = document.getElementById(canvasId);
+    this.tip = document.getElementById(tipId);
+    this.opt = opt;                     // {idx, color, digits, unit}
+    this.hover = -1;
+    this.canvas.addEventListener("mousemove", e => this.onMove(e));
+    this.canvas.addEventListener("mouseleave", () => {
+      this.hover = -1; this.tip.classList.remove("on"); this.draw();
+    });
+    window.addEventListener("resize", () => this.draw());
+  }
+
+  setData(data) { this.data = data; this.hover = -1; this.draw(); }
+
+  onMove(e) {
+    if (!this.data || this.data.length < 2 || !this.box) return;
+    const r = this.canvas.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const frac = (x - this.box.x) / this.box.w;
+    let i = Math.round(frac * (this.data.length - 1));
+    i = Math.max(0, Math.min(this.data.length - 1, i));
+    this.hover = i;
+    this.draw();
+
+    const row = this.data[i];
+    const cx = this.box.x + (this.box.w * i) / (this.data.length - 1);
+    const cy = this.yPos(row[1 + this.opt.idx]);
+    this.tip.innerHTML = fmtTime(row[0], hours * 3600) + " &nbsp;<b>" +
+      row[1 + this.opt.idx].toFixed(this.opt.digits) + " " + this.opt.unit + "</b>";
+    this.tip.style.left = cx + "px";
+    this.tip.style.top = cy + "px";
+    this.tip.classList.add("on");
+  }
+
+  yPos(v) { return this.box.y + this.box.h - (v - this.yMin) / (this.yMax - this.yMin) * this.box.h; }
+
+  draw() {
+    const c = this.canvas, ctx = c.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+      c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = { l: 52, r: 14, t: 12, b: 24 };
+    this.box = { x: pad.l, y: pad.t, w: w - pad.l - pad.r, h: h - pad.t - pad.b };
+    const box = this.box, color = this.opt.color;
+
+    if (!this.data || this.data.length === 0) {
+      ctx.fillStyle = "#5d6b7a"; ctx.font = "13px " + getComputedStyle(document.body).fontFamily;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("暂无数据，等待采集…", w / 2, h / 2);
+      return;
+    }
+
+    const vals = this.data.map(r => r[1 + this.opt.idx]);
+    const n = this.data.length;
+    let vMin = Math.min(...vals), vMax = Math.max(...vals);
+    if (vMax - vMin < 0.5) { vMin -= 0.5; vMax += 0.5; }
+    const padV = (vMax - vMin) * 0.12;
+    this.yMin = vMin - padV; this.yMax = vMax + padV;
+
+    /* 网格 + Y 轴标签 */
+    ctx.font = "11px " + getComputedStyle(document.body).fontFamily;
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (let i = 0; i <= 4; i++) {
+      const y = box.y + (box.h * i) / 4;
+      ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(box.x, y + .5); ctx.lineTo(box.x + box.w, y + .5); ctx.stroke();
+      const v = this.yMax - ((this.yMax - this.yMin) * i) / 4;
+      ctx.fillStyle = "#5d6b7a";
+      ctx.fillText(v.toFixed(this.opt.digits), box.x - 8, y);
+    }
+
+    /* 面积 + 折线 */
+    const xAt = n === 1 ? () => box.x + box.w / 2
+                        : i => box.x + (box.w * i) / (n - 1);
+
+    if (n === 1) {
+      /* 只有 1 个点时画一个点，并提示等下一次采集 */
+      ctx.beginPath(); ctx.arc(xAt(0), this.yPos(vals[0]), 5, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.fill();
+      ctx.fillStyle = "#5d6b7a";
+      ctx.font = "12px " + getComputedStyle(document.body).fontFamily;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("只有 1 个数据点，采集满 2 次后显示曲线", w / 2, box.y + box.h / 2);
+      return;
+    }
+
+    const grad = ctx.createLinearGradient(0, box.y, 0, box.y + box.h);
+    grad.addColorStop(0, color + "55");
+    grad.addColorStop(1, color + "00");
+    ctx.beginPath();
+    ctx.moveTo(xAt(0), this.yPos(vals[0]));
+    for (let i = 1; i < n; i++) ctx.lineTo(xAt(i), this.yPos(vals[i]));
+    ctx.lineTo(xAt(n - 1), box.y + box.h);
+    ctx.lineTo(xAt(0), box.y + box.h);
+    ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(xAt(0), this.yPos(vals[0]));
+    for (let i = 1; i < n; i++) ctx.lineTo(xAt(i), this.yPos(vals[i]));
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    ctx.stroke();
+
+    /* 最新点 */
+    const lx = xAt(n - 1), ly = this.yPos(vals[n - 1]);
+    ctx.beginPath(); ctx.arc(lx, ly, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = color; ctx.fill();
+
+    /* X 轴时间标签 */
+    ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillStyle = "#5d6b7a";
+    const span = this.data[n - 1][0] - this.data[0][0];
+    for (let i = 0; i <= 3; i++) {
+      const idx = Math.round(((n - 1) * i) / 3);
+      ctx.fillText(fmtTime(this.data[idx][0], span), xAt(idx), box.y + box.h + 6);
+    }
+
+    /* 悬停十字线 */
+    if (this.hover >= 0 && this.hover < n) {
+      const hx = xAt(this.hover), hy = this.yPos(vals[this.hover]);
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(hx, box.y); ctx.lineTo(hx, box.y + box.h); ctx.stroke();
+      ctx.beginPath(); ctx.arc(hx, hy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = "#0b1219"; ctx.fill();
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+    }
+  }
+}
+
+/* ---------- 三个图表 ---------- */
+const charts = {
+  t: new LineChart("ch-t", "tip-t", { idx: 0, color: "#ffb347", digits: 1, unit: "°C" }),
+  h: new LineChart("ch-h", "tip-h", { idx: 1, color: "#2fd3c0", digits: 1, unit: "%" }),
+  p: new LineChart("ch-p", "tip-p", { idx: 2, color: "#6ea8fe", digits: 1, unit: "hPa" }),
+};
+
+/* ---------- 卡片 ---------- */
+function statCard(id, key, digits, unit) {
+  const el = document.getElementById(id);
+  const sub = document.getElementById(id + "-sub");
+  if (!rows.length) { el.innerHTML = "--<small>" + unit + "</small>"; sub.textContent = "范围 --"; return; }
+  const vals = rows.map(r => r[key]);
+  const last = vals[vals.length - 1];
+  el.innerHTML = last.toFixed(digits) + "<small>" + unit + "</small>";
+  sub.textContent = "范围 " + Math.min(...vals).toFixed(digits) + " ~ " +
+                    Math.max(...vals).toFixed(digits);
+}
+
+function updateCards() {
+  statCard("c-t", 1, 1, "°C");
+  statCard("c-h", 2, 1, "%");
+  statCard("c-p", 3, 1, "hPa");
+  const el = document.getElementById("c-a"), sub = document.getElementById("c-a-sub");
+  if (rows.length) {
+    el.innerHTML = rows[rows.length - 1][4].toFixed(0) + "<small>m</small>";
+    const vals = rows.map(r => r[4]);
+    sub.textContent = "范围 " + Math.min(...vals).toFixed(0) + " ~ " + Math.max(...vals).toFixed(0) + " m";
+  }
+  const now = { t: "n-t", h: "n-h", p: "n-p" };
+  if (rows.length) {
+    const last = rows[rows.length - 1];
+    document.getElementById(now.t).textContent = last[1].toFixed(1) + " °C";
+    document.getElementById(now.h).textContent = last[2].toFixed(1) + " %";
+    document.getElementById(now.p).textContent = last[3].toFixed(1) + " hPa";
+  }
+}
+
+/* ---------- 状态 ---------- */
+async function refreshStatus() {
+  try {
+    const s = await (await fetch("/api/status")).json();
+    const pill = document.getElementById("pill");
+    const txt = document.getElementById("pill-text");
+    if (s.connected) {
+      pill.className = "pill ok";
+      txt.textContent = (s.port || "串口") + " 采集中";
+    } else {
+      pill.className = "pill bad";
+      const err = s.last_error || "";
+      if (err.indexOf("PermissionError") >= 0 || err.indexOf("拒绝访问") >= 0) {
+        txt.textContent = "串口被占用（关掉 Thonny）";
+      } else if (err.indexOf("could not open") >= 0) {
+        txt.textContent = "串口打不开";
+      } else if (err) {
+        txt.textContent = "串口未连接";
+      } else {
+        txt.textContent = "正在识别串口…";
+      }
+      pill.title = err;
+    }
+    lastEpoch = s.last_epoch;
+    document.getElementById("f-db").textContent = "数据库 " + s.db;
+    document.getElementById("f-count").textContent =
+      "累计 " + (s.total || 0) + " 条记录";
+  } catch (e) {
+    document.getElementById("pill").className = "pill bad";
+    document.getElementById("pill-text").textContent = "服务未响应";
+  }
+}
+
+/* ---------- 数据 ---------- */
+async function refreshData() {
+  const res = await (await fetch("/api/data?hours=" + hours)).json();
+  rows = res.rows;
+  updateCards();
+  charts.t.setData(rows);
+  charts.h.setData(rows);
+  charts.p.setData(rows);
+  document.getElementById("meta").textContent =
+    "区间内 " + res.count + " 条" + (res.points < res.count ? "（图上显示 " + res.points + " 点）" : "");
+}
+
+async function refreshAll() {
+  await refreshStatus();
+  await refreshData();
+}
+
+/* ---------- 交互 ---------- */
+document.getElementById("seg").addEventListener("click", e => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  document.querySelectorAll("#seg button").forEach(b => b.classList.remove("on"));
+  btn.classList.add("on");
+  hours = parseFloat(btn.dataset.hours);
+  document.getElementById("csv").href = "/api/export.csv?hours=" + hours;
+  refreshAll();
+});
+
+setInterval(() => {
+  if (lastEpoch) document.getElementById("last-upd").textContent = relative(lastEpoch);
+}, 1000);
+
+setInterval(refreshAll, REFRESH_MS);
+refreshAll();
+</script>
+</body>
+</html>
