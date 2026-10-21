@@ -213,3 +213,4 @@ python tools/read_serial.py COM5 12 --reset  # 先复位开发板再读
 ## License
 
 [MIT](LICENSE)
+"# eps32_s3_weather" 
