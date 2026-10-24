@@ -31,6 +31,8 @@ def main():
     ap.add_argument("--simulate", action="store_true", help="用模拟数据测试网页")
     ap.add_argument("--no-reset-on-open", action="store_true",
                     help="打开串口时不复位开发板（默认会复位一次，立刻拿到首个数据点）")
+    ap.add_argument("--no-weather", action="store_true",
+                    help="不获取/下发心知天气（默认自动，密钥读自 firmware/secrets.py）")
     args = ap.parse_args()
 
     init_db()
@@ -39,7 +41,8 @@ def main():
         collector = SimCollector()
     else:
         collector = Collector(port=args.port,
-                              reset_on_open=not args.no_reset_on_open)
+                              reset_on_open=not args.no_reset_on_open,
+                              weather=not args.no_weather)
         ports = Collector.list_ports_text()
         print("[采集] 可用串口：%s" % (", ".join(ports) if ports else "无"))
 

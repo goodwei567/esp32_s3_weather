@@ -1,37 +1,25 @@
-"""ESP32-S3 室内气象站 · 采集端（本地传感 + 实时天气 + 串口上报）。
+"""ESP32-S3 室内气象站 · 采集端（本地传感 + 电脑下发天气 + 串口上报）。
 
 部署方法：用 Thonny 打开本文件，另存为开发板上的 `main.py`，之后每次上电自动运行。
-Wi-Fi 与心知天气 API 的配置放在开发板上的 `secrets.py`（不要提交到 git），
-参考 `firmware/secrets_example.py` 填写后，连同本文件一起部署。
 
-串口输出（每 LOG_SEC 秒一行，供电脑端解析）：
+板子不联网。天气由电脑端通过串口下发，格式：
 
-    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<今日降雨mm>,<明日降雨mm>
+    WX,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<今日降水mm>,<明日降水mm>
+
+板子每 LOG_SEC 秒上报一行（供电脑端解析入库）：
+
+    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<今日降水mm>,<明日降水mm>
 
 硬件接线：
 
     1.54" IPS 屏 ST7789 (SPI) : SCL=GPIO4  SDA=GPIO5  RES=GPIO6  DC=GPIO7
                                 CS=GPIO15  BLK=GPIO16  VCC=3V3  GND=GND
     AHT20 + BMP280      (I2C) : SCL=GPIO10 SDA=GPIO9   VDD=3V3  GND=GND
-
-可调参数：SEA_LEVEL（海平面气压基准）、LOG_SEC（采样间隔）、
-WEATHER_SEC（天气刷新间隔）。
 """
 
 from machine import Pin, SPI, I2C
 import framebuf
 import time
-
-# ================= 配置（secrets.py 缺失时也能跑，只是没有天气） =================
-try:
-    import secrets
-    SSID = secrets.SSID
-    PASSWORD = secrets.PASSWORD
-    SENV_KEY = secrets.SENV_KEY
-    SENV_CITY = secrets.SENV_CITY
-except ImportError:
-    SSID = PASSWORD = SENV_KEY = ""
-    SENV_CITY = "kunming"
 
 # ================= 屏幕 ST7789（SPI） =================
 PIN_SCK, PIN_MOSI = 4, 5
@@ -186,83 +174,49 @@ bmp = BMP280(i2c, 0x76 if 0x76 in found else 0x77)
 
 SEA_LEVEL = 1013.25      # 标准海平面气压，要更准就换成当地气象台的数值
 LOG_SEC = 600            # 本地采样间隔（秒），600 = 10 分钟
-WEATHER_SEC = 1800       # 天气刷新间隔（秒），1800 = 30 分钟
 
 
-# ================= Wi-Fi 与心知天气 =================
-wlan = None
-wifi_ok = False
-
-# 天气缓存。取不到时保持 "--"，屏幕照常显示本地数据。
+# ================= 天气（由电脑下发） =================
 WX = {"city": "--", "cond": "--", "hi": "--", "lo": "--",
       "uv": "--", "rain": "--", "rain2": "--"}
 
 
-def wifi_connect(timeout_ms=20000):
-    global wlan, wifi_ok
-    if not SSID:
-        print("WIFI: secrets.py 未配置，跳过联网")
+def handle_wx_line(line):
+    """解析电脑下发的 WX,城市,天气,高,低,紫外线,降水,降水 行"""
+    parts = line.split(",")
+    if len(parts) != 8:
         return
-    import network
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    if not wlan.isconnected():
-        print("WIFI: 连接中...")
-        wlan.connect(SSID, PASSWORD)
-        t0 = time.ticks_ms()
-        while not wlan.isconnected() and time.ticks_diff(time.ticks_ms(), t0) < timeout_ms:
-            time.sleep_ms(200)
-    wifi_ok = wlan.isconnected()
-    print("WIFI:", "OK" if wifi_ok else "FAIL")
-
-
-def _get_json(url):
-    import urequests
-    r = urequests.get(url)
+    city, cond, hi, lo, uv, rain, rain2 = parts[1:]
+    if city: WX["city"] = city
+    if cond: WX["cond"] = cond
+    if hi:   WX["hi"] = hi
+    if lo:   WX["lo"] = lo
+    if uv:   WX["uv"] = uv
+    if rain:   WX["rain"] = rain
+    if rain2:  WX["rain2"] = rain2
+    draw_weather_rows()
+    # 收到新天气后立刻补发一条 DATA2，电脑端数据库马上有完整记录
     try:
-        return r.json()
-    finally:
-        r.close()
-
-
-def _ascii(s):
-    # 屏幕字体只支持 ASCII，其余字符换成 '?'
-    return "".join("?" if not (32 <= ord(c) < 127) else c for c in str(s))
-
-
-def fetch_weather():
-    """拉取心知天气：实况 + 3 日预报 + 生活指数(紫外线)。
-    免费套餐字段差异较大，缺的字段保持 '--'。"""
-    global WX
-    base = "https://api.seniverse.com/v3"
-    q = "key=%s&location=%s&language=en&unit=c" % (SENV_KEY, SENV_CITY)
-
-    try:
-        j = _get_json("%s/weather/now.json?%s" % (base, q))
-        res = j["results"][0]
-        WX["city"] = _ascii(res["location"]["name"])
-        WX["cond"] = _ascii(res["now"]["text"])
-
-        j = _get_json("%s/weather/daily.json?%s&start=0&days=2" % (base, q))
-        d = j["results"][0]["daily"]
-        WX["hi"] = str(d[0].get("high", "--"))
-        WX["lo"] = str(d[0].get("low", "--"))
-        # 免费套餐没有降水概率(%)，precip 是降水量(mm)
-        for key in ("precip", "rainfall"):
-            for day in d:
-                if day.get(key) not in (None, ""):
-                    WX["rain"] = str(d[0].get(key, "--"))
-                    WX["rain2"] = str(d[1].get(key, "--"))
-                    break
-            if WX["rain"] != "--":
-                break
-
-        j = _get_json("%s/life/suggestion.json?%s" % (base, q))
-        sug = j["results"][0]["suggestion"]
-        WX["uv"] = _ascii(sug.get("uv", {}).get("brief", "--"))
+        t, h = aht.read()
+        pt, pa = bmp.read()
+        if t is not None and pa:
+            alt = 44330 * (1 - (pa / SEA_LEVEL) ** 0.1903)
+            print("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s,%s"
+                  % (t, h, pa, alt, WX["city"], WX["cond"], WX["hi"],
+                     WX["lo"], WX["uv"], WX["rain"], WX["rain2"]))
     except Exception as e:
-        print("WEATHER: 获取失败 -", e)
-    print("WEATHER:", WX)
+        print("WXDATA: 补发读数失败 -", e)
+    print("WXOK")            # 回执，电脑端据此知道下发成功
+
+
+def poll_serial():
+    """非阻塞读串口（板子同时是 REPL，读不到就返回）"""
+    try:
+        line = input()
+        if line.startswith("WX,"):
+            handle_wx_line(line)
+    except (OSError, ValueError, EOFError):
+        pass
 
 
 # ================= 启动 =================
@@ -272,18 +226,12 @@ fill(0x0000)
 ctext("WEATHER", 6, 0x07FF, 2)
 print("BOOT")
 
-wifi_connect()
-if wifi_ok:
-    fetch_weather()
-
 t0 = time.ticks_ms()
 count = 0
 next_log = 0
-next_wx = WEATHER_SEC * 1000
 
 
 def draw_weather_rows():
-    # 城市 / 天气 / 紫外线 / 降雨概率（今日 + 明日）
     ctext(WX["city"], 104, 0xFD20, 2)
     ctext("%s %s/%sC" % (WX["cond"], WX["hi"], WX["lo"]), 126, 0x07E0, 2)
     ctext("UV " + WX["uv"], 148, 0xFFE0, 2)
@@ -291,22 +239,8 @@ def draw_weather_rows():
     ctext("M-RAIN " + WX["rain2"] + "mm", 192, 0x8410, 2)
 
 
-def draw_wifi_dot():
-    # 右上角小方块：绿 = 已联网，灰 = 未联网
-    fill_rect(W - 14, 10, 8, 8, 0x07E0 if wifi_ok else 0x8410)
-
-
 while True:
-    now_ms = time.ticks_diff(time.ticks_ms(), t0)
-    now = now_ms // 1000
-
-    if now_ms >= next_wx:
-        if not wifi_ok:
-            wifi_connect(8000)
-        if wifi_ok:
-            fetch_weather()
-            draw_weather_rows()
-        next_wx = now_ms + WEATHER_SEC * 1000
+    now = time.ticks_diff(time.ticks_ms(), t0) // 1000
 
     if now >= next_log:
         t, h = aht.read()
@@ -323,13 +257,13 @@ while True:
             ctext("H %.1f%%" % h, 64, 0x07FF, 3)
             fill_rect(20, 96, W - 40, 2, 0x39E7)     # 分隔线
             draw_weather_rows()
-            draw_wifi_dot()
 
             # 串口输出（电脑端按这行解析）
             print("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s,%s"
                   % (t, h, pa, alt, WX["city"], WX["cond"], WX["hi"], WX["lo"],
                      WX["uv"], WX["rain"], WX["rain2"]))
 
+    poll_serial()
     # 底部状态行：每秒刷新，用来确认程序还在运行
     ctext("#%d  %d:%02d" % (count, now // 60, now % 60), 220, 0x8410, 1)
-    time.sleep(1)
+    time.sleep_ms(200)

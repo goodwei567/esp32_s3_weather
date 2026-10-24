@@ -1,11 +1,13 @@
 """复制本文件为 secrets.py，填入你的真实配置。
 
-secrets.py 只部署到开发板上，已被 .gitignore 排除，不会被提交到 GitHub。
+secrets.py 已被 .gitignore 排除，不会被提交到 GitHub。
+天气由电脑端读取（只用到 SENV_KEY / SENV_CITY），板子本身不联网，
+Wi-Fi 字段留空即可。
 """
 
-# 2.4GHz Wi-Fi（ESP32-S3 不支持 5GHz）
-SSID = "your-wifi-name"
-PASSWORD = "your-wifi-password"
+# 板子不联网，以下两项保留占位即可
+SSID = ""
+PASSWORD = ""
 
 # 心知天气 https://www.seniverse.com/ （v3 接口使用私钥）
 # 免费套餐：紫外线可用 life/suggestion 获取；

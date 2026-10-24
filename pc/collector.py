@@ -1,4 +1,5 @@
-"""串口采集：读取 ESP32 打印的 DATA / DATA2 行，写入 SQLite。
+"""串口采集：读取 ESP32 上报的 DATA / DATA2 行写入 SQLite，
+并定时从心知天气取数，通过串口下发给屏幕显示。
 
 ESP32 每行格式：
     DATA,<温度>,<湿度>,<气压hPa>,<海拔m>                        （旧版固件）
@@ -9,12 +10,15 @@ ESP32 每行格式：
 断线（拔线、板子复位、串口号变化）会自动重连。
 """
 
+import json
 import os
 import re
 import sqlite3
 import threading
 import time
 from datetime import datetime
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import serial
 from serial.tools import list_ports
@@ -22,6 +26,17 @@ from serial.tools import list_ports
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "weather.db")
 BAUDRATE = 115200
+WEATHER_SEC = 1800            # 天气刷新间隔（秒），1800 = 30 分钟
+
+# 心知天气配置：优先读同目录 secrets.py（真实密钥，不进 git）
+SENV = {"key": "", "city": "kunming"}
+_sec_path = os.path.join(BASE_DIR, "..", "firmware", "secrets.py")
+if os.path.exists(_sec_path):
+    with open(_sec_path, encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"(SENV_KEY|SENV_CITY)\s*=\s*['\"]([^'\"]+)", line.strip())
+            if m:
+                SENV[{"SENV_KEY": "key", "SENV_CITY": "city"}[m.group(1)]] = m.group(2)
 
 LINE_RE = re.compile(
     r"DATA,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,"
@@ -82,12 +97,14 @@ def init_db(path=DB_PATH):
 
 
 class Collector:
-    """后台线程：持续读串口并入库。"""
+    """后台线程：持续读串口入库，并定时把天气下发给屏幕。"""
 
-    def __init__(self, port=None, db_path=DB_PATH, reset_on_open=True):
+    def __init__(self, port=None, db_path=DB_PATH, reset_on_open=True,
+                 weather=True):
         self.port = port
         self.db_path = db_path
         self.reset_on_open = reset_on_open
+        self.weather = weather
         self.connected = False
         self.active_port = None
         self.samples = 0
@@ -95,6 +112,7 @@ class Collector:
         self.last_line = ""
         self.last_error = None
         self._hinted = False
+        self._last_wx_sent = 0
         self._stop = threading.Event()
         self._lock = threading.Lock()
 
@@ -165,6 +183,12 @@ class Collector:
             self.last_line = line
         if line.startswith("BOOT"):
             print("[采集] 检测到板子启动/复位")
+            # 板子重启后屏幕天气清空，立刻补发一次
+            self._last_wx_sent = 0
+            return
+        if line.startswith("WXOK"):
+            print("[%s] 屏幕已接收天气"
+                  % datetime.now().strftime("%H:%M:%S"))
             return
         m2 = LINE2_RE.match(line)
         if m2:
@@ -236,11 +260,61 @@ class Collector:
                     self.last_error = str(exc)
                 return
             if not chunk:
+                if self.weather and SENV["key"]:
+                    self._maybe_send_weather(ser)
                 continue
             buf += chunk
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
-                self._handle_line(raw.decode("utf-8", "ignore").strip())
+                line = raw.decode("utf-8", "ignore").strip()
+                self._handle_line(line)
+                self._maybe_send_weather(ser)
+                if line.startswith("BOOT"):
+                    # 板子刚重启，立即把天气推过去，避免第一条 DATA2 带 '--'
+                    self._maybe_send_weather(ser, force=True)
+
+    # ---------- 天气下发 ----------
+    @staticmethod
+    def _seniverse(path, **params):
+        q = {"key": SENV["key"], "location": SENV["city"],
+             "language": "en", "unit": "c"}
+        q.update(params)
+        url = "https://api.seniverse.com/v3%s?%s" % (path, urlencode(q))
+        with urlopen(url, timeout=15) as r:
+            return json.loads(r.read().decode())
+
+    def _fetch_weather(self):
+        """取实况 + 3日预报 + 紫外线。免费套餐 precip 为降水量(mm)。"""
+        now = self._seniverse("/weather/now.json")["results"][0]
+        city, cond = now["location"]["name"], now["now"]["text"]
+        d = self._seniverse("/weather/daily.json", start=0, days=2)["results"][0]["daily"]
+        uv = (self._seniverse("/life/suggestion.json")["results"][0]
+              .get("suggestion", {}).get("uv", {}).get("brief", "--"))
+        return (city, cond, d[0].get("high", "--"), d[0].get("low", "--"),
+                uv, d[0].get("precip", "0"), d[1].get("precip", "0"))
+
+    def _maybe_send_weather(self, ser, force=False):
+        if not self.weather or not SENV["key"]:
+            return
+        now = time.time()
+        if not force and now - self._last_wx_sent < WEATHER_SEC:
+            return
+        try:
+            vals = self._fetch_weather()
+            # 屏幕点阵字体只支持 ASCII，其余替换成 '?'
+            safe = tuple("?" if not (32 <= ord(c) < 127) else c
+                         for v in vals for c in str(v))
+            # 重新按字段分组（上面展开成了单字符元组）
+            fields, idx = [], 0
+            for v in vals:
+                fields.append("".join(safe[idx:idx + len(str(v))]))
+                idx += len(str(v))
+            line = "WX," + ",".join(fields) + "\n"
+            ser.write(line.encode())
+            self._last_wx_sent = now
+            print("[天气] 已下发:", line.strip())
+        except Exception as exc:
+            print("[天气] 获取/下发失败：%s" % exc)
 
 
 class SimCollector(Collector):
