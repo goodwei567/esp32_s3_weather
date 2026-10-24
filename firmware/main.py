@@ -4,11 +4,14 @@
 
 板子不联网。天气由电脑端通过串口下发，格式：
 
-    WX,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<明日天气>
+    WX,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<明日天气>,
+       <今日降水mm>,<明日降水mm>,<室外湿度%>,<明日最高温>,<明日最低温>
 
 板子每 LOG_SEC 秒上报一行（供电脑端解析入库）：
 
-    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<明日天气>
+    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,<最低温>,
+          <紫外线>,<明日天气>,<今日降水>,<明日降水>,<室外湿度>,<明日最高温>,
+          <明日最低温>
 
 硬件接线：
 
@@ -105,6 +108,19 @@ def ctext(s, y, fg, scale=2):
     text(s, (W - len(s) * 8 * scale) // 2, y, fg, 0x0000, scale)
 
 
+def ctext_fit(s, y, fg):
+    """每字符宽 8*scale，超过 15 字符时自动用小一号，避免画出屏幕外。"""
+    ctext(s, y, fg, 2 if len(s) <= 15 else 1)
+
+
+def mm1(v):
+    """降水量留一位小数，让行宽保持稳定。"""
+    try:
+        return "%.1f" % float(v)
+    except (TypeError, ValueError):
+        return str(v)[:4]
+
+
 # ================= 传感器（I2C） =================
 i2c = I2C(0, scl=Pin(10), sda=Pin(9), freq=400000)
 found = i2c.scan()
@@ -178,22 +194,37 @@ WXREQ_SEC = 1800         # 每隔这么久向电脑请求一次刷新天气
 
 
 # ================= 天气（由电脑下发） =================
-WX = {"city": "--", "cond": "--", "hi": "--", "lo": "--",
-      "uv": "--", "cond2": "--"}
+WX = {"city": "--", "cond": "--", "hi": "--", "lo": "--", "uv": "--",
+      "cond2": "--", "hi2": "--", "lo2": "--", "rain": "--", "rain2": "--",
+      "out_h": "--"}
+
+
+def data2_line(t, h, pa, alt):
+    """按电脑端解析顺序拼一行上报数据（顺序与 WEATHER_COLS 一致）。"""
+    return ("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s"
+            % (t, h, pa, alt, WX["city"], WX["cond"], WX["hi"], WX["lo"],
+               WX["uv"], WX["cond2"], WX["rain"], WX["rain2"], WX["out_h"],
+               WX["hi2"], WX["lo2"]))
 
 
 def handle_wx_line(line):
-    """解析电脑下发的 WX,城市,天气,高,低,紫外线,降水,降水 行"""
+    """解析 WX,城市,天气,高,低,紫外线,明日,降水,降水,湿度,明日高,明日低"""
     parts = line.split(",")
-    if len(parts) != 7:
+    if len(parts) != 12:
         return
-    city, cond, hi, lo, uv, cond2 = parts[1:]
+    (city, cond, hi, lo, uv, cond2, rain, rain2, out_h, hi2,
+     lo2) = parts[1:]
     if city: WX["city"] = city
     if cond: WX["cond"] = cond
     if hi:   WX["hi"] = hi
     if lo:   WX["lo"] = lo
     if uv:   WX["uv"] = uv
     if cond2:  WX["cond2"] = cond2
+    if hi2:  WX["hi2"] = hi2
+    if lo2:  WX["lo2"] = lo2
+    if rain: WX["rain"] = rain
+    if rain2: WX["rain2"] = rain2
+    if out_h: WX["out_h"] = out_h
     draw_weather_rows()
     # 收到新天气后立刻补发一条 DATA2，电脑端数据库马上有完整记录
     try:
@@ -201,9 +232,7 @@ def handle_wx_line(line):
         pt, pa = bmp.read()
         if t is not None and pa:
             alt = 44330 * (1 - (pa / SEA_LEVEL) ** 0.1903)
-            print("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s"
-                  % (t, h, pa, alt, WX["city"], WX["cond"], WX["hi"],
-                     WX["lo"], WX["uv"], WX["cond2"]))
+            print(data2_line(t, h, pa, alt))
     except Exception as e:
         print("WXDATA: 补发读数失败 -", e)
     print("WXOK")            # 回执，电脑端据此知道下发成功
@@ -242,10 +271,13 @@ next_wx = 2              # 启动 2 秒后就先要一次天气，屏幕尽快�
 
 
 def draw_weather_rows():
-    ctext(WX["city"], 104, 0xFD20, 2)
-    ctext("%s %s/%sC" % (WX["cond"], WX["hi"], WX["lo"]), 126, 0x07E0, 2)
-    ctext("UV " + WX["uv"], 148, 0xFFE0, 2)
-    ctext("TMRW " + WX["cond2"], 170, 0x07FF, 2)
+    ctext_fit(WX["city"][:15], 104, 0xFD20)
+    ctext_fit("%s %s/%sC" % (WX["cond"], WX["hi"], WX["lo"]), 126, 0x07E0)
+    ctext_fit("UV %s RH %s%%" % (WX["uv"][:5], WX["out_h"]), 148, 0xFFE0)
+    ctext_fit("Rain %s/%s mm" % (mm1(WX["rain"]), mm1(WX["rain2"])),
+              170, 0xFFE0)
+    ctext_fit("Tmr %s %s/%sC" % (WX["cond2"], WX["hi2"], WX["lo2"]),
+              192, 0x07FF)
 
 
 while True:
@@ -272,9 +304,7 @@ while True:
             draw_weather_rows()
 
             # 串口输出（电脑端按这行解析）
-            print("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s"
-                  % (t, h, pa, alt, WX["city"], WX["cond"], WX["hi"], WX["lo"],
-                     WX["uv"], WX["cond2"]))
+            print(data2_line(t, h, pa, alt))
 
     # 底部状态行：每秒刷新，用来确认程序还在运行
     ctext("#%d  %d:%02d" % (count, now // 60, now % 60), 220, 0x8410, 1)

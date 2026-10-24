@@ -1,10 +1,11 @@
-"""一键部署：把固件和 secrets.py 推到开发板并复位。
+"""一键部署：把固件推到开发板并复位。
 
 用法：
     python tools/deploy.py            # 自动找串口
     python tools/deploy.py COM5       # 指定串口
 
-首次使用前，先把 firmware/secrets_example.py 复制为 firmware/secrets.py 并填好配置。
+板子不联网，天气密钥只留在电脑端（firmware/secrets.py 供 pc/collector.py 读取），
+因此本脚本不把 secrets.py 复制到板子上。
 """
 
 import os
@@ -19,22 +20,24 @@ def run(args):
     subprocess.run([sys.executable, "-m", "mpremote"] + args, check=True)
 
 
+def run_quiet(args):
+    """失败也不中断（例如板子上本来就没有该文件）。"""
+    subprocess.run([sys.executable, "-m", "mpremote"] + args,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def main():
     port = sys.argv[1] if len(sys.argv) > 1 else "auto"
     conn = ["connect", port] if port != "auto" else []
 
     main_py = os.path.join(BASE, "firmware", "main.py")
-    secrets_py = os.path.join(BASE, "firmware", "secrets.py")
 
     run(conn + ["cp", main_py, ":main.py"])
-    if os.path.exists(secrets_py):
-        run(conn + ["cp", secrets_py, ":secrets.py"])
-    else:
-        print("\n[提示] 没找到 firmware/secrets.py，已只部署 main.py（无天气功能）。")
-        print("       复制 secrets_example.py 为 secrets.py、填好 Wi-Fi 和心知 key，")
-        print("       再跑一次本脚本即可。")
+    # 板子不需要密钥：清掉早期版本可能留在板上的 secrets.py
+    run_quiet(conn + ["rm", ":secrets.py"])
+
     run(conn + ["reset"])
-    print("\n部署完成，开发板已复位。")
+    print("\n部署完成，开发板已复位。天气密钥只在电脑端使用。")
 
 
 if __name__ == "__main__":

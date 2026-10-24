@@ -4,7 +4,8 @@
 ESP32 每行格式：
     DATA,<温度>,<湿度>,<气压hPa>,<海拔m>                        （旧版固件）
     DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,
-          <最低温>,<紫外线>,<明日天气>                          （新版固件）
+          <最低温>,<紫外线>,<明日天气>,<今日降水>,<明日降水>,
+          <室外湿度>,<明日低温>                                （新版固件）
 
 两种格式都支持，天气字段缺失时存 NULL。
 断线（拔线、板子复位、串口号变化）会自动重连。
@@ -45,11 +46,12 @@ LINE_RE = re.compile(
 
 LINE2_RE = re.compile(
     r"DATA2,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)"
-    r"(?:,\s*([^,]*),\s*([^,]*),\s*([^,]*),\s*([^,]*),\s*([^,]*)"
-    r",\s*([^,]*))?"
+    r"(?:,\s*(.*))?$"
 )
 
-WEATHER_COLS = ("city", "cond", "hi", "lo", "uv", "cond2")
+# 电脑下发（WX 行）与板子上报（DATA2 行）共用的天气字段顺序
+WEATHER_COLS = ("city", "cond", "hi", "lo", "uv", "cond2",
+                "rain", "rain2", "out_h", "hi2", "lo2")
 
 
 def _num_or_none(s):
@@ -80,15 +82,21 @@ def init_db(path=DB_PATH):
             hi    REAL,
             lo    REAL,
             uv    TEXT,
+            cond2 TEXT,
             rain  REAL,
-            rain2 REAL
+            rain2 REAL,
+            out_h REAL,
+            hi2   REAL,
+            lo2   REAL
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_readings_epoch ON readings(epoch)")
     # 旧库自动补列（SQLite 没有 IF NOT EXISTS 的 ALTER TABLE）
     existing = {r[1] for r in conn.execute("PRAGMA table_info(readings)")}
     for col, decl in (("city", "TEXT"), ("cond", "TEXT"), ("hi", "REAL"),
-                      ("lo", "REAL"), ("uv", "TEXT"), ("cond2", "TEXT")):
+                      ("lo", "REAL"), ("uv", "TEXT"), ("cond2", "TEXT"),
+                      ("rain", "REAL"), ("rain2", "REAL"),
+                      ("out_h", "REAL"), ("hi2", "REAL"), ("lo2", "REAL")):
         if col not in existing:
             conn.execute("ALTER TABLE readings ADD COLUMN %s %s" % (col, decl))
     conn.commit()
@@ -158,12 +166,15 @@ class Collector:
         try:
             conn.execute(
                 "INSERT INTO readings(epoch, ts, t, h, p, alt, "
-                "city, cond, hi, lo, uv, cond2) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "city, cond, hi, lo, uv, cond2, rain, rain2, out_h, hi2, lo2) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (now, datetime.fromtimestamp(now).isoformat(timespec="seconds"),
                  t, h, p, alt,
                  wx.get("city"), wx.get("cond"), _num_or_none(wx.get("hi")),
-                 _num_or_none(wx.get("lo")), wx.get("uv"), wx.get("cond2")),
+                 _num_or_none(wx.get("lo")), wx.get("uv"), wx.get("cond2"),
+                 _num_or_none(wx.get("rain")), _num_or_none(wx.get("rain2")),
+                 _num_or_none(wx.get("out_h")), _num_or_none(wx.get("hi2")),
+                 _num_or_none(wx.get("lo2"))),
             )
             conn.commit()
         finally:
@@ -197,8 +208,9 @@ class Collector:
         m2 = LINE2_RE.match(line)
         if m2:
             g = m2.groups()
-            wx = dict(zip(WEATHER_COLS,
-                          [None if v is None else v.strip() for v in g[4:]]))
+            # 旧固件没有天气字段，g[4] 为 None；字段缺失时按顺序截断
+            extra = [v.strip() for v in g[4].split(",")] if g[4] else []
+            wx = dict(zip(WEATHER_COLS, extra))
             self._store(float(g[0]), float(g[1]), float(g[2]), float(g[3]), wx)
             self._hinted = False
             return
@@ -294,8 +306,13 @@ class Collector:
         d = self._seniverse("/weather/daily.json", start=0, days=2)["results"][0]["daily"]
         uv = (self._seniverse("/life/suggestion.json")["results"][0]
               .get("suggestion", {}).get("uv", {}).get("brief", "--"))
+        # 顺序必须与 WEATHER_COLS、firmware/main.py 里的解包顺序一致
         return (city, cond, d[0].get("high", "--"), d[0].get("low", "--"),
-                uv, d[1].get("text_day", "--"))
+                uv, d[1].get("text_day", "--"),
+                d[0].get("precip", d[0].get("rainfall", "--")),
+                d[1].get("precip", d[1].get("rainfall", "--")),
+                d[0].get("humidity", "--"), d[1].get("high", "--"),
+                d[1].get("low", "--"))
 
     def _maybe_send_weather(self, ser, force=False):
         if not self.weather or not SENV["key"]:

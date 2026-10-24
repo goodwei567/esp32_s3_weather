@@ -203,8 +203,10 @@
     </div>
     <div class="wx-items">
       <span>今日 <b id="wx-hi">--</b> / <b id="wx-lo">--</b> °C</span>
+      <span>室外湿度 <b id="wx-out-h">--</b>%</span>
+      <span>降水 <b id="wx-rain">--</b> / <b id="wx-rain2">--</b> mm</span>
       <span>紫外线 <b id="wx-uv">--</b></span>
-      <span>明日 <b id="wx-cond2">--</b></span>
+      <span>明日 <b id="wx-cond2">--</b> <b id="wx-hi2">--</b> / <b id="wx-lo2">--</b> °C</span>
     </div>
   </section>
 
@@ -455,13 +457,12 @@ function updateCards() {
     const vals = rows.map(r => r[4]);
     sub.textContent = "范围 " + Math.min(...vals).toFixed(0) + " ~ " + Math.max(...vals).toFixed(0) + " m";
   }
-  const now = { t: "n-t", h: "n-h", p: "n-p" };
-  if (rows.length) {
-    const last = rows[rows.length - 1];
-    document.getElementById(now.t).textContent = last[1].toFixed(1) + " °C";
-    document.getElementById(now.h).textContent = last[2].toFixed(1) + " %";
-    document.getElementById(now.p).textContent = last[3].toFixed(1) + " hPa";
-  }
+    if (rows.length) {
+      const last = rows[rows.length - 1];
+      document.getElementById("n-t").textContent = last[1].toFixed(1) + " °C";
+      document.getElementById("n-h").textContent = last[2].toFixed(1) + " %";
+      document.getElementById("n-p").textContent = last[3].toFixed(1) + " hPa";
+    }
 }
 
 /* ---------- 状态 ---------- */
@@ -496,6 +497,11 @@ async function refreshStatus() {
       document.getElementById("wx-lo").textContent = s.wx.lo ?? "--";
       document.getElementById("wx-uv").textContent = s.wx.uv || "--";
       document.getElementById("wx-cond2").textContent = s.wx.cond2 || "--";
+      document.getElementById("wx-out-h").textContent = s.wx.out_h ?? "--";
+      document.getElementById("wx-rain").textContent = s.wx.rain ?? "--";
+      document.getElementById("wx-rain2").textContent = s.wx.rain2 ?? "--";
+      document.getElementById("wx-hi2").textContent = s.wx.hi2 ?? "--";
+      document.getElementById("wx-lo2").textContent = s.wx.lo2 ?? "--";
     } else {
       document.getElementById("weather").style.display = "none";
     }
