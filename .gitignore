@@ -7,6 +7,17 @@ __pycache__/
 pc/weather.db
 pc/monitor.log
 *.log
+*.db
+*.sqlite
+*.sqlite3
+
+# 本地私密配置（示例文件保留，真实文件绝不入库）
+secrets.py
+.env
+.env.*
+*.env
+*.key
+*.pem
 
 # 编辑器 / 系统
 .vscode/
