@@ -204,8 +204,7 @@
     <div class="wx-items">
       <span>今日 <b id="wx-hi">--</b> / <b id="wx-lo">--</b> °C</span>
       <span>紫外线 <b id="wx-uv">--</b></span>
-      <span>今日降水 <b id="wx-rain">--</b> mm</span>
-      <span>明日降水 <b id="wx-rain2">--</b> mm</span>
+      <span>明日 <b id="wx-cond2">--</b></span>
     </div>
   </section>
 
@@ -496,8 +495,7 @@ async function refreshStatus() {
       document.getElementById("wx-hi").textContent = s.wx.hi ?? "--";
       document.getElementById("wx-lo").textContent = s.wx.lo ?? "--";
       document.getElementById("wx-uv").textContent = s.wx.uv || "--";
-      document.getElementById("wx-rain").textContent = s.wx.rain ?? "--";
-      document.getElementById("wx-rain2").textContent = s.wx.rain2 ?? "--";
+      document.getElementById("wx-cond2").textContent = s.wx.cond2 || "--";
     } else {
       document.getElementById("weather").style.display = "none";
     }

@@ -38,7 +38,7 @@ def create_app(collector, db_path=DB_PATH):
                 "SELECT COUNT(*) AS n, MIN(epoch) AS first, MAX(epoch) AS last FROM readings"
             ).fetchone()
             wx = conn.execute(
-                "SELECT epoch, city, cond, hi, lo, uv, rain, rain2 FROM readings "
+                "SELECT epoch, city, cond, hi, lo, uv, cond2 FROM readings "
                 "WHERE city IS NOT NULL ORDER BY epoch DESC LIMIT 1").fetchone()
             conn.close()
             st["total"] = row["n"]
@@ -73,8 +73,8 @@ def create_app(collector, db_path=DB_PATH):
             "hours": hours,
             "count": total,
             "points": len(rows),
-            "rows": [[r["epoch"], r["t"], r["h"], r["p"], r["alt"],
-                      r["rain"], r["rain2"]] for r in rows],
+            "rows": [[r["epoch"], r["t"], r["h"], r["p"], r["alt"]]
+                     for r in rows],
         })
 
     @app.route("/api/export.csv")
@@ -83,7 +83,7 @@ def create_app(collector, db_path=DB_PATH):
         since = time.time() - hours * 3600
         conn = _connect(db_path)
         rows = conn.execute(
-            "SELECT epoch, ts, t, h, p, alt, city, cond, hi, lo, uv, rain, rain2 "
+            "SELECT epoch, ts, t, h, p, alt, city, cond, hi, lo, uv, cond2 "
             "FROM readings "
             "WHERE epoch >= ? ORDER BY epoch", (since,)).fetchall()
         conn.close()
@@ -92,12 +92,11 @@ def create_app(collector, db_path=DB_PATH):
         writer = csv.writer(buf)
         writer.writerow(["epoch", "time", "temperature_c", "humidity_pct",
                          "pressure_hpa", "altitude_m", "city", "condition",
-                         "high_c", "low_c", "uv", "rain_today_mm",
-                         "rain_tomorrow_mm"])
+                         "high_c", "low_c", "uv", "tomorrow_condition"])
         for r in rows:
             writer.writerow([r["epoch"], r["ts"], r["t"], r["h"], r["p"],
-                             r["alt"], r["city"], r["cond"], r["hi"], r["lo"],
-                             r["uv"], r["rain"], r["rain2"]])
+                             r["alt"], r["city"], r["cond"], r["hi"],
+                             r["lo"], r["uv"], r["cond2"]])
         data = "\ufeff" + buf.getvalue()          # BOM 让 Excel 正确识别中文/UTF-8
         return Response(
             data, mimetype="text/csv",

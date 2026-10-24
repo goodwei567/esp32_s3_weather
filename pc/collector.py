@@ -4,7 +4,7 @@
 ESP32 每行格式：
     DATA,<温度>,<湿度>,<气压hPa>,<海拔m>                        （旧版固件）
     DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,
-          <最低温>,<紫外线>,<今日降雨%>,<明日降雨%>             （新版固件）
+          <最低温>,<紫外线>,<明日天气>                          （新版固件）
 
 两种格式都支持，天气字段缺失时存 NULL。
 断线（拔线、板子复位、串口号变化）会自动重连。
@@ -46,10 +46,10 @@ LINE_RE = re.compile(
 LINE2_RE = re.compile(
     r"DATA2,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)"
     r"(?:,\s*([^,]*),\s*([^,]*),\s*([^,]*),\s*([^,]*),\s*([^,]*)"
-    r",\s*([^,]*),\s*([^,]*))?"
+    r",\s*([^,]*))?"
 )
 
-WEATHER_COLS = ("city", "cond", "hi", "lo", "uv", "rain", "rain2")
+WEATHER_COLS = ("city", "cond", "hi", "lo", "uv", "cond2")
 
 
 def _num_or_none(s):
@@ -88,8 +88,7 @@ def init_db(path=DB_PATH):
     # 旧库自动补列（SQLite 没有 IF NOT EXISTS 的 ALTER TABLE）
     existing = {r[1] for r in conn.execute("PRAGMA table_info(readings)")}
     for col, decl in (("city", "TEXT"), ("cond", "TEXT"), ("hi", "REAL"),
-                      ("lo", "REAL"), ("uv", "TEXT"), ("rain", "REAL"),
-                      ("rain2", "REAL")):
+                      ("lo", "REAL"), ("uv", "TEXT"), ("cond2", "TEXT")):
         if col not in existing:
             conn.execute("ALTER TABLE readings ADD COLUMN %s %s" % (col, decl))
     conn.commit()
@@ -113,6 +112,7 @@ class Collector:
         self.last_error = None
         self._hinted = False
         self._last_wx_sent = 0
+        self._wants_weather = False
         self._stop = threading.Event()
         self._lock = threading.Lock()
 
@@ -158,13 +158,12 @@ class Collector:
         try:
             conn.execute(
                 "INSERT INTO readings(epoch, ts, t, h, p, alt, "
-                "city, cond, hi, lo, uv, rain, rain2) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "city, cond, hi, lo, uv, cond2) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (now, datetime.fromtimestamp(now).isoformat(timespec="seconds"),
                  t, h, p, alt,
                  wx.get("city"), wx.get("cond"), _num_or_none(wx.get("hi")),
-                 _num_or_none(wx.get("lo")), wx.get("uv"),
-                 _num_or_none(wx.get("rain")), _num_or_none(wx.get("rain2"))),
+                 _num_or_none(wx.get("lo")), wx.get("uv"), wx.get("cond2")),
             )
             conn.commit()
         finally:
@@ -185,6 +184,11 @@ class Collector:
             print("[采集] 检测到板子启动/复位")
             # 板子重启后屏幕天气清空，立刻补发一次
             self._last_wx_sent = 0
+            return
+        if line.startswith("WXREQ"):
+            # 板子主动请求天气（请求-应答模式，避免输入被 REPL 吞掉）
+            print("[天气] 收到板子请求 WXREQ")
+            self._wants_weather = True
             return
         if line.startswith("WXOK"):
             print("[%s] 屏幕已接收天气"
@@ -260,18 +264,18 @@ class Collector:
                     self.last_error = str(exc)
                 return
             if not chunk:
-                if self.weather and SENV["key"]:
-                    self._maybe_send_weather(ser)
+                if self.weather and SENV["key"] and self._wants_weather:
+                    self._maybe_send_weather(ser, force=True)
+                    self._wants_weather = False
                 continue
             buf += chunk
             while b"\n" in buf:
                 raw, buf = buf.split(b"\n", 1)
                 line = raw.decode("utf-8", "ignore").strip()
                 self._handle_line(line)
-                self._maybe_send_weather(ser)
-                if line.startswith("BOOT"):
-                    # 板子刚重启，立即把天气推过去，避免第一条 DATA2 带 '--'
+                if line.startswith("WXREQ"):
                     self._maybe_send_weather(ser, force=True)
+                    self._wants_weather = False
 
     # ---------- 天气下发 ----------
     @staticmethod
@@ -284,14 +288,14 @@ class Collector:
             return json.loads(r.read().decode())
 
     def _fetch_weather(self):
-        """取实况 + 3日预报 + 紫外线。免费套餐 precip 为降水量(mm)。"""
+        """取实况 + 3日预报 + 紫外线。cond2 为明日白天天气。"""
         now = self._seniverse("/weather/now.json")["results"][0]
         city, cond = now["location"]["name"], now["now"]["text"]
         d = self._seniverse("/weather/daily.json", start=0, days=2)["results"][0]["daily"]
         uv = (self._seniverse("/life/suggestion.json")["results"][0]
               .get("suggestion", {}).get("uv", {}).get("brief", "--"))
         return (city, cond, d[0].get("high", "--"), d[0].get("low", "--"),
-                uv, d[0].get("precip", "0"), d[1].get("precip", "0"))
+                uv, d[1].get("text_day", "--"))
 
     def _maybe_send_weather(self, ser, force=False):
         if not self.weather or not SENV["key"]:
@@ -302,13 +306,8 @@ class Collector:
         try:
             vals = self._fetch_weather()
             # 屏幕点阵字体只支持 ASCII，其余替换成 '?'
-            safe = tuple("?" if not (32 <= ord(c) < 127) else c
-                         for v in vals for c in str(v))
-            # 重新按字段分组（上面展开成了单字符元组）
-            fields, idx = [], 0
-            for v in vals:
-                fields.append("".join(safe[idx:idx + len(str(v))]))
-                idx += len(str(v))
+            fields = ["".join("?" if not (32 <= ord(c) < 127) else c
+                              for c in str(v)) for v in vals]
             line = "WX," + ",".join(fields) + "\n"
             ser.write(line.encode())
             self._last_wx_sent = now

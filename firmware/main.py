@@ -4,11 +4,11 @@
 
 板子不联网。天气由电脑端通过串口下发，格式：
 
-    WX,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<今日降水mm>,<明日降水mm>
+    WX,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<明日天气>
 
 板子每 LOG_SEC 秒上报一行（供电脑端解析入库）：
 
-    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<今日降水mm>,<明日降水mm>
+    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<明日天气>
 
 硬件接线：
 
@@ -174,26 +174,26 @@ bmp = BMP280(i2c, 0x76 if 0x76 in found else 0x77)
 
 SEA_LEVEL = 1013.25      # 标准海平面气压，要更准就换成当地气象台的数值
 LOG_SEC = 600            # 本地采样间隔（秒），600 = 10 分钟
+WXREQ_SEC = 1800         # 每隔这么久向电脑请求一次刷新天气
 
 
 # ================= 天气（由电脑下发） =================
 WX = {"city": "--", "cond": "--", "hi": "--", "lo": "--",
-      "uv": "--", "rain": "--", "rain2": "--"}
+      "uv": "--", "cond2": "--"}
 
 
 def handle_wx_line(line):
     """解析电脑下发的 WX,城市,天气,高,低,紫外线,降水,降水 行"""
     parts = line.split(",")
-    if len(parts) != 8:
+    if len(parts) != 7:
         return
-    city, cond, hi, lo, uv, rain, rain2 = parts[1:]
+    city, cond, hi, lo, uv, cond2 = parts[1:]
     if city: WX["city"] = city
     if cond: WX["cond"] = cond
     if hi:   WX["hi"] = hi
     if lo:   WX["lo"] = lo
     if uv:   WX["uv"] = uv
-    if rain:   WX["rain"] = rain
-    if rain2:  WX["rain2"] = rain2
+    if cond2:  WX["cond2"] = cond2
     draw_weather_rows()
     # 收到新天气后立刻补发一条 DATA2，电脑端数据库马上有完整记录
     try:
@@ -201,22 +201,31 @@ def handle_wx_line(line):
         pt, pa = bmp.read()
         if t is not None and pa:
             alt = 44330 * (1 - (pa / SEA_LEVEL) ** 0.1903)
-            print("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s,%s"
+            print("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s"
                   % (t, h, pa, alt, WX["city"], WX["cond"], WX["hi"],
-                     WX["lo"], WX["uv"], WX["rain"], WX["rain2"]))
+                     WX["lo"], WX["uv"], WX["cond2"]))
     except Exception as e:
         print("WXDATA: 补发读数失败 -", e)
     print("WXOK")            # 回执，电脑端据此知道下发成功
 
 
-def poll_serial():
-    """非阻塞读串口（板子同时是 REPL，读不到就返回）"""
-    try:
-        line = input()
-        if line.startswith("WX,"):
-            handle_wx_line(line)
-    except (OSError, ValueError, EOFError):
-        pass
+def wait_weather(timeout_ms=15000):
+    """打印 WXREQ 后限时等待电脑回 WX 行。
+    用 input() 而不是 UART：USB CDC 串口只挂在这一个通道上，
+    且请求后立刻读、期间不干别的，数据不会被 REPL 抢走。"""
+    print("WXREQ")
+    deadline = time.ticks_add(time.ticks_ms(), timeout_ms)
+    line = ""
+    while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        try:
+            line = input().strip()
+            if line.startswith("WX,"):
+                handle_wx_line(line)
+                return True
+        except (OSError, ValueError, EOFError):
+            pass
+        time.sleep_ms(100)
+    return False
 
 
 # ================= 启动 =================
@@ -229,18 +238,22 @@ print("BOOT")
 t0 = time.ticks_ms()
 count = 0
 next_log = 0
+next_wx = 2              # 启动 2 秒后就先要一次天气，屏幕尽快有内容
 
 
 def draw_weather_rows():
     ctext(WX["city"], 104, 0xFD20, 2)
     ctext("%s %s/%sC" % (WX["cond"], WX["hi"], WX["lo"]), 126, 0x07E0, 2)
     ctext("UV " + WX["uv"], 148, 0xFFE0, 2)
-    ctext("T-RAIN " + WX["rain"] + "mm", 170, 0x07FF, 2)
-    ctext("M-RAIN " + WX["rain2"] + "mm", 192, 0x8410, 2)
+    ctext("TMRW " + WX["cond2"], 170, 0x07FF, 2)
 
 
 while True:
     now = time.ticks_diff(time.ticks_ms(), t0) // 1000
+
+    if now >= next_wx:
+        wait_weather()
+        next_wx += WXREQ_SEC
 
     if now >= next_log:
         t, h = aht.read()
@@ -259,11 +272,10 @@ while True:
             draw_weather_rows()
 
             # 串口输出（电脑端按这行解析）
-            print("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s,%s"
+            print("DATA2,%.2f,%.2f,%.1f,%.0f,%s,%s,%s,%s,%s,%s"
                   % (t, h, pa, alt, WX["city"], WX["cond"], WX["hi"], WX["lo"],
-                     WX["uv"], WX["rain"], WX["rain2"]))
+                     WX["uv"], WX["cond2"]))
 
-    poll_serial()
     # 底部状态行：每秒刷新，用来确认程序还在运行
     ctext("#%d  %d:%02d" % (count, now // 60, now % 60), 220, 0x8410, 1)
     time.sleep_ms(200)
