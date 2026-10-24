@@ -17,3 +17,6 @@ desktop.ini
 
 # Thonny 产生的临时文件
 .thonny/
+
+# 真实密钥只放在开发板上，不进仓库
+firmware/secrets.py

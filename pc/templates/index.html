@@ -152,6 +152,22 @@
     animation: rise .5s .1s ease both;
   }
 
+  .weather {
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    background: linear-gradient(120deg, #16222e 0%, #122028 100%);
+    border: 1px solid #24384a; border-radius: 14px;
+    padding: 13px 20px; margin-bottom: 16px;
+    animation: rise .5s .05s ease both;
+  }
+  .wx-main { display: flex; align-items: baseline; gap: 12px; }
+  .wx-city { font-size: 17px; font-weight: 600; color: #ffd68a; }
+  .wx-cond { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+  .wx-items {
+    display: flex; gap: 22px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+  }
+  .wx-items b { color: var(--text); font-weight: 600; }
+
   @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
   @keyframes pulse {
     0% { box-shadow: 0 0 0 0 rgba(70,211,138,.5); }
@@ -179,6 +195,19 @@
       <span>最后更新 <b id="last-upd" style="color:var(--text)">--</b></span>
     </div>
   </header>
+
+  <section class="weather" id="weather" style="display:none">
+    <div class="wx-main">
+      <span class="wx-city" id="wx-city">--</span>
+      <span class="wx-cond" id="wx-cond">--</span>
+    </div>
+    <div class="wx-items">
+      <span>今日 <b id="wx-hi">--</b> / <b id="wx-lo">--</b> °C</span>
+      <span>紫外线 <b id="wx-uv">--</b></span>
+      <span>今日降雨 <b id="wx-rain">--</b>%</span>
+      <span>明日降雨 <b id="wx-rain2">--</b>%</span>
+    </div>
+  </section>
 
   <section class="cards">
     <div class="card" style="--accent: var(--temp); animation-delay:.02s">
@@ -460,6 +489,18 @@ async function refreshStatus() {
       pill.title = err;
     }
     lastEpoch = s.last_epoch;
+    if (s.wx) {
+      document.getElementById("weather").style.display = "flex";
+      document.getElementById("wx-city").textContent = s.wx.city || "--";
+      document.getElementById("wx-cond").textContent = s.wx.cond || "--";
+      document.getElementById("wx-hi").textContent = s.wx.hi ?? "--";
+      document.getElementById("wx-lo").textContent = s.wx.lo ?? "--";
+      document.getElementById("wx-uv").textContent = s.wx.uv || "--";
+      document.getElementById("wx-rain").textContent = s.wx.rain ?? "--";
+      document.getElementById("wx-rain2").textContent = s.wx.rain2 ?? "--";
+    } else {
+      document.getElementById("weather").style.display = "none";
+    }
     document.getElementById("f-db").textContent = "数据库 " + s.db;
     document.getElementById("f-count").textContent =
       "累计 " + (s.total || 0) + " 条记录";

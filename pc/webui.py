@@ -35,11 +35,15 @@ def create_app(collector, db_path=DB_PATH):
         try:
             conn = _connect(db_path)
             row = conn.execute(
-                "SELECT COUNT(*) AS n, MIN(epoch) AS first, MAX(epoch) AS last "
-                "FROM readings").fetchone()
+                "SELECT COUNT(*) AS n, MIN(epoch) AS first, MAX(epoch) AS last FROM readings"
+            ).fetchone()
+            wx = conn.execute(
+                "SELECT epoch, city, cond, hi, lo, uv, rain, rain2 FROM readings "
+                "WHERE city IS NOT NULL ORDER BY epoch DESC LIMIT 1").fetchone()
             conn.close()
             st["total"] = row["n"]
             st["first_epoch"] = row["first"]
+            st["wx"] = dict(wx) if wx else None
         except Exception as exc:
             st["total"] = 0
             st["first_epoch"] = None
@@ -56,7 +60,7 @@ def create_app(collector, db_path=DB_PATH):
 
         conn = _connect(db_path)
         rows = conn.execute(
-            "SELECT epoch, t, h, p, alt FROM readings "
+            "SELECT epoch, t, h, p, alt, rain, rain2 FROM readings "
             "WHERE epoch >= ? ORDER BY epoch", (since,)).fetchall()
         conn.close()
 
@@ -69,7 +73,8 @@ def create_app(collector, db_path=DB_PATH):
             "hours": hours,
             "count": total,
             "points": len(rows),
-            "rows": [[r["epoch"], r["t"], r["h"], r["p"], r["alt"]] for r in rows],
+            "rows": [[r["epoch"], r["t"], r["h"], r["p"], r["alt"],
+                      r["rain"], r["rain2"]] for r in rows],
         })
 
     @app.route("/api/export.csv")
@@ -78,16 +83,21 @@ def create_app(collector, db_path=DB_PATH):
         since = time.time() - hours * 3600
         conn = _connect(db_path)
         rows = conn.execute(
-            "SELECT epoch, ts, t, h, p, alt FROM readings "
+            "SELECT epoch, ts, t, h, p, alt, city, cond, hi, lo, uv, rain, rain2 "
+            "FROM readings "
             "WHERE epoch >= ? ORDER BY epoch", (since,)).fetchall()
         conn.close()
 
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(["epoch", "time", "temperature_c", "humidity_pct",
-                         "pressure_hpa", "altitude_m"])
+                         "pressure_hpa", "altitude_m", "city", "condition",
+                         "high_c", "low_c", "uv", "rain_today_pct",
+                         "rain_tomorrow_pct"])
         for r in rows:
-            writer.writerow([r["epoch"], r["ts"], r["t"], r["h"], r["p"], r["alt"]])
+            writer.writerow([r["epoch"], r["ts"], r["t"], r["h"], r["p"],
+                             r["alt"], r["city"], r["cond"], r["hi"], r["lo"],
+                             r["uv"], r["rain"], r["rain2"]])
         data = "\ufeff" + buf.getvalue()          # BOM 让 Excel 正确识别中文/UTF-8
         return Response(
             data, mimetype="text/csv",

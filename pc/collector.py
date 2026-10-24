@@ -1,6 +1,11 @@
-"""串口采集：读取 ESP32 打印的 DATA 行，写入 SQLite。
+"""串口采集：读取 ESP32 打印的 DATA / DATA2 行，写入 SQLite。
 
-ESP32 每行格式：DATA,<温度>,<湿度>,<气压hPa>,<海拔m>
+ESP32 每行格式：
+    DATA,<温度>,<湿度>,<气压hPa>,<海拔m>                        （旧版固件）
+    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,
+          <最低温>,<紫外线>,<今日降雨%>,<明日降雨%>             （新版固件）
+
+两种格式都支持，天气字段缺失时存 NULL。
 断线（拔线、板子复位、串口号变化）会自动重连。
 """
 
@@ -23,6 +28,22 @@ LINE_RE = re.compile(
     r"\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)"
 )
 
+LINE2_RE = re.compile(
+    r"DATA2,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)"
+    r"(?:,\s*([^,]*),\s*([^,]*),\s*([^,]*),\s*([^,]*),\s*([^,]*)"
+    r",\s*([^,]*),\s*([^,]*))?"
+)
+
+WEATHER_COLS = ("city", "cond", "hi", "lo", "uv", "rain", "rain2")
+
+
+def _num_or_none(s):
+    """'24.5' -> 24.5；'--'/空/非数值 -> None"""
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
 # 用于自动识别开发板的串口特征（CH343/CH340/CP210x/板载 USB 串口）
 PORT_HINTS = ("ch343", "ch340", "cp210", "usb-serial",
               "usb single serial", "1a86", "10c4", "esp32")
@@ -38,10 +59,24 @@ def init_db(path=DB_PATH):
             t     REAL,
             h     REAL,
             p     REAL,
-            alt   REAL
+            alt   REAL,
+            city  TEXT,
+            cond  TEXT,
+            hi    REAL,
+            lo    REAL,
+            uv    TEXT,
+            rain  REAL,
+            rain2 REAL
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_readings_epoch ON readings(epoch)")
+    # 旧库自动补列（SQLite 没有 IF NOT EXISTS 的 ALTER TABLE）
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(readings)")}
+    for col, decl in (("city", "TEXT"), ("cond", "TEXT"), ("hi", "REAL"),
+                      ("lo", "REAL"), ("uv", "TEXT"), ("rain", "REAL"),
+                      ("rain2", "REAL")):
+        if col not in existing:
+            conn.execute("ALTER TABLE readings ADD COLUMN %s %s" % (col, decl))
     conn.commit()
     conn.close()
 
@@ -98,14 +133,20 @@ class Collector:
         self._stop.set()
 
     # ---------- 入库 ----------
-    def _store(self, t, h, p, alt):
+    def _store(self, t, h, p, alt, wx=None):
         now = time.time()
+        wx = wx or {}
         conn = sqlite3.connect(self.db_path, timeout=10)
         try:
             conn.execute(
-                "INSERT INTO readings(epoch, ts, t, h, p, alt) VALUES(?,?,?,?,?,?)",
+                "INSERT INTO readings(epoch, ts, t, h, p, alt, "
+                "city, cond, hi, lo, uv, rain, rain2) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (now, datetime.fromtimestamp(now).isoformat(timespec="seconds"),
-                 t, h, p, alt),
+                 t, h, p, alt,
+                 wx.get("city"), wx.get("cond"), _num_or_none(wx.get("hi")),
+                 _num_or_none(wx.get("lo")), wx.get("uv"),
+                 _num_or_none(wx.get("rain")), _num_or_none(wx.get("rain2"))),
             )
             conn.commit()
         finally:
@@ -113,8 +154,9 @@ class Collector:
         with self._lock:
             self.samples += 1
             self.last_epoch = now
-        print("[%s] 已记录 #%d  T=%.2f  H=%.2f  P=%.1f  ALT=%.0f"
-              % (datetime.now().strftime("%H:%M:%S"), self.samples, t, h, p, alt))
+        print("[%s] 已记录 #%d  T=%.2f  H=%.2f  P=%.1f  ALT=%.0f  天气=%s"
+              % (datetime.now().strftime("%H:%M:%S"), self.samples, t, h, p,
+                 alt, wx.get("cond") or "-"))
 
     def _handle_line(self, line):
         if not line:
@@ -123,6 +165,14 @@ class Collector:
             self.last_line = line
         if line.startswith("BOOT"):
             print("[采集] 检测到板子启动/复位")
+            return
+        m2 = LINE2_RE.match(line)
+        if m2:
+            g = m2.groups()
+            wx = dict(zip(WEATHER_COLS,
+                          [None if v is None else v.strip() for v in g[4:]]))
+            self._store(float(g[0]), float(g[1]), float(g[2]), float(g[3]), wx)
+            self._hinted = False
             return
         m = LINE_RE.search(line)
         if m:
