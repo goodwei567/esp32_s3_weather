@@ -6,7 +6,7 @@ Wi-Fi 与心知天气 API 的配置放在开发板上的 `secrets.py`（不要�
 
 串口输出（每 LOG_SEC 秒一行，供电脑端解析）：
 
-    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<今日降雨%>,<明日降雨%>
+    DATA2,<温度>,<湿度>,<气压hPa>,<海拔m>,<城市>,<天气>,<最高温>,<最低温>,<紫外线>,<今日降雨mm>,<明日降雨mm>
 
 硬件接线：
 
@@ -247,8 +247,8 @@ def fetch_weather():
         d = j["results"][0]["daily"]
         WX["hi"] = str(d[0].get("high", "--"))
         WX["lo"] = str(d[0].get("low", "--"))
-        # 降水概率字段名随套餐不同，precip / precip_prob / rainfall 依次尝试
-        for key in ("precip", "precip_prob", "rainfall"):
+        # 免费套餐没有降水概率(%)，precip 是降水量(mm)
+        for key in ("precip", "rainfall"):
             for day in d:
                 if day.get(key) not in (None, ""):
                     WX["rain"] = str(d[0].get(key, "--"))
@@ -287,8 +287,8 @@ def draw_weather_rows():
     ctext(WX["city"], 104, 0xFD20, 2)
     ctext("%s %s/%sC" % (WX["cond"], WX["hi"], WX["lo"]), 126, 0x07E0, 2)
     ctext("UV " + WX["uv"], 148, 0xFFE0, 2)
-    ctext("T-RAIN " + WX["rain"] + "%", 170, 0x07FF, 2)
-    ctext("M-RAIN " + WX["rain2"] + "%", 192, 0x8410, 2)
+    ctext("T-RAIN " + WX["rain"] + "mm", 170, 0x07FF, 2)
+    ctext("M-RAIN " + WX["rain2"] + "mm", 192, 0x8410, 2)
 
 
 def draw_wifi_dot():

@@ -92,8 +92,8 @@ def create_app(collector, db_path=DB_PATH):
         writer = csv.writer(buf)
         writer.writerow(["epoch", "time", "temperature_c", "humidity_pct",
                          "pressure_hpa", "altitude_m", "city", "condition",
-                         "high_c", "low_c", "uv", "rain_today_pct",
-                         "rain_tomorrow_pct"])
+                         "high_c", "low_c", "uv", "rain_today_mm",
+                         "rain_tomorrow_mm"])
         for r in rows:
             writer.writerow([r["epoch"], r["ts"], r["t"], r["h"], r["p"],
                              r["alt"], r["city"], r["cond"], r["hi"], r["lo"],
