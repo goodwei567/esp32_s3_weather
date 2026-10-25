@@ -270,14 +270,32 @@ next_log = 0
 next_wx = 2              # 启动 2 秒后就先要一次天气，屏幕尽快有内容
 
 
+WEATHER_TOP = 100        # 天气区域顶部（96 的横线以下）
+WEATHER_BOTTOM = 216     # 底部状态行的上沿，低于这里不再重绘
+
+
+def draw_local_rows(t, h):
+    """本地温湿度：先擦干净再画，避免旧数值留下残影。"""
+    fill_rect(0, 24, W, WEATHER_TOP - 24, 0x0000)
+    ctext("T %.1fC" % t, 32, 0xFFE0, 3)
+    ctext("H %.1f%%" % h, 64, 0x07FF, 3)
+    fill_rect(20, 96, W - 40, 2, 0x39E7)     # 分隔线
+
+
 def draw_weather_rows():
-    ctext_fit(WX["city"][:15], 104, 0xFD20)
-    ctext_fit("%s %s/%sC" % (WX["cond"], WX["hi"], WX["lo"]), 126, 0x07E0)
-    ctext_fit("UV %s RH %s%%" % (WX["uv"][:5], WX["out_h"]), 148, 0xFFE0)
+    """室外天气：城市不再上屏，省下的空间给明日天气和温度区间。"""
+    fill_rect(0, WEATHER_TOP, W, WEATHER_BOTTOM - WEATHER_TOP, 0x0000)
+    y = WEATHER_TOP
+    ctext_fit("%s %s/%sC" % (WX["cond"], WX["hi"], WX["lo"]), y, 0x07E0)
+    y += 22
+    ctext_fit("UV %s RH %s%%" % (WX["uv"][:5], WX["out_h"]), y, 0xFFE0)
+    y += 22
     ctext_fit("Rain %s/%s mm" % (mm1(WX["rain"]), mm1(WX["rain2"])),
-              170, 0xFFE0)
-    ctext_fit("Tmr %s %s/%sC" % (WX["cond2"], WX["hi2"], WX["lo2"]),
-              192, 0x07FF)
+              y, 0xFFE0)
+    y += 22
+    ctext_fit("Tomorrow", y, 0x8410)
+    y += 22
+    ctext_fit("%s %s/%sC" % (WX["cond2"], WX["hi2"], WX["lo2"]), y, 0x07FF)
 
 
 while True:
@@ -298,9 +316,7 @@ while True:
             next_log = now + LOG_SEC
 
             # 屏幕上半部分：本地温湿度（气压/海拔只上传，不再显示）
-            ctext("T %.1fC" % t, 32, 0xFFE0, 3)
-            ctext("H %.1f%%" % h, 64, 0x07FF, 3)
-            fill_rect(20, 96, W - 40, 2, 0x39E7)     # 分隔线
+            draw_local_rows(t, h)
             draw_weather_rows()
 
             # 串口输出（电脑端按这行解析）
