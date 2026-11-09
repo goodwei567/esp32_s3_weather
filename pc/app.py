@@ -15,6 +15,31 @@ from collector import Collector, SimCollector, init_db, DB_PATH
 from webui import create_app
 
 
+def single_instance_guard():
+    """同一时间只允许一个采集进程，避免两个实例抢 COM5。
+
+    返回的文件句柄必须一直持有，进程退出时锁才释放。
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        ".monitor.lock")
+    fh = open(path, "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            if os.path.getsize(path) == 0:
+                fh.write("lock")
+                fh.flush()
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        return None
+    return fh
+
+
 def main():
     # 让日志即时写入（静默启动时会重定向到 monitor.log）
     try:
@@ -22,6 +47,14 @@ def main():
         sys.stderr.reconfigure(line_buffering=True)
     except Exception:
         pass
+
+    lock = single_instance_guard()
+    if lock is None:
+        print("已有采集程序在运行：同一时间只能开一个，否则会抢 COM5。")
+        print("请关闭另一个采集窗口；若是静默启动的，"
+              "在任务管理器里结束多余的 python.exe 即可。")
+        time.sleep(5)
+        return
 
     ap = argparse.ArgumentParser(description="ESP32-S3 气象站本地监控")
     ap.add_argument("--port", help="串口号，例如 COM5；不填则自动识别")
